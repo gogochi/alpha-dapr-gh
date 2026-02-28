@@ -37,22 +37,54 @@ npm run build
 
 ### 部署到 GitHub Pages
 
-```bash
-# 方法一: 使用 deploy script
-chmod +x deploy.sh
-./deploy.sh
+#### 方法一：GitHub Actions 自動部署（推薦）
 
-# 方法二: 手動部署
+本專案已內建 `.github/workflows/deploy.yml`，每次 push 到 `main` branch 會自動建置並部署。
+
+**首次設定步驟：**
+
+1. 在 GitHub 建立 repo 並推送程式碼：
+   ```bash
+   git init
+   git add -A
+   git commit -m "Initial commit"
+   gh repo create <你的帳號>/<repo名稱> --public --source=. --push
+   ```
+
+2. 啟用 GitHub Pages（選擇 GitHub Actions 作為來源）：
+   ```bash
+   gh api repos/<你的帳號>/<repo名稱>/pages -X POST \
+     --input - <<'EOF'
+   {"build_type":"workflow","source":{"branch":"main","path":"/"}}
+   EOF
+   ```
+
+3. 觸發部署（push 一次即可）：
+   ```bash
+   git commit --allow-empty -m "Trigger deploy"
+   git push origin main
+   ```
+
+4. 等待約 1-2 分鐘，即可在以下網址存取：
+   ```
+   https://<你的帳號>.github.io/<repo名稱>/
+   ```
+
+**之後更新：** 只要 push 到 `main`，Actions 會自動重新建置部署。
+
+#### 方法二：手動部署 dist 到 gh-pages branch
+
+```bash
 npm run build
 cd dist
 git init
-git checkout -b main
+git checkout -b gh-pages
 git add -A
 git commit -m 'deploy'
-git push -f git@github.com:<USERNAME>/<REPO>.git main:gh-pages
+git push -f git@github.com:<你的帳號>/<repo名稱>.git gh-pages
 ```
 
-然後在 GitHub repo 設定中，將 Pages 來源設為 `gh-pages` branch。
+然後到 GitHub repo **Settings → Pages**，將 Source 設為 `gh-pages` branch。
 
 ### 使用 ONNX 模型（可選）
 
