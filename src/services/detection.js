@@ -7,16 +7,17 @@ let ort = null
 
 // Class labels matching the training config (SceneDAPR order)
 export const CLASS_NAMES = ['rain', 'umbrella', 'person', 'lightning', 'cloud', 'puddle']
-// Per-class confidence thresholds matching the copilot backend
+// Per-class confidence thresholds (at least 0.5 matching copilot backend base)
 const CLASS_CONFIDENCE = {
-  rain: 0.35,
+  rain: 0.5,
   umbrella: 0.5,
   person: 0.5,
-  lightning: 0.3,
-  cloud: 0.3,
-  puddle: 0.3,
+  lightning: 0.45,
+  cloud: 0.45,
+  puddle: 0.45,
 }
 const MIN_DETECTION_AREA = 100 // Minimum bbox area in px² to filter tiny false positives
+const MIN_INK_RATIO = 0.02 // Minimum ratio of non-white pixels in bbox to keep detection
 
 const MODEL_INPUT_SIZE = 640
 const MODEL_PATH = '/models/dapr.onnx'
@@ -46,7 +47,7 @@ function getReusableCanvas(width, height) {
  */
 export async function detectObjects(imageSource, options = {}) {
   const {
-    confidenceThreshold = 0.25,
+    confidenceThreshold = 0.5,
     iouThreshold = 0.45,
     useOnnx = true,
   } = options
@@ -60,11 +61,46 @@ export async function detectObjects(imageSource, options = {}) {
   const ctx = canvas.getContext('2d')
   const imageData = ctx.getImageData(0, 0, width, height)
   try {
-    return await onnxInference(imageData, width, height, { confidenceThreshold, iouThreshold })
+    const detections = await onnxInference(imageData, width, height, { confidenceThreshold, iouThreshold })
+    return filterByContent(detections, imageData, width)
   } catch (e) {
     console.warn('ONNX inference failed, falling back to placeholder:', e.message)
     return placeholderDetect(width, height)
   }
+}
+
+/**
+ * Filter out detections in blank areas by checking pixel content
+ * If the bbox area has very few non-white pixels (no ink/strokes), discard it
+ */
+function filterByContent(detections, imageData, imgWidth) {
+  const pixels = imageData.data
+  return detections.filter((det) => {
+    const [x1, y1, x2, y2] = det.bbox
+    const bx1 = Math.max(0, Math.floor(x1))
+    const by1 = Math.max(0, Math.floor(y1))
+    const bx2 = Math.min(imgWidth, Math.ceil(x2))
+    const by2 = Math.min(imageData.height, Math.ceil(y2))
+    const bw = bx2 - bx1
+    const bh = by2 - by1
+    if (bw <= 0 || bh <= 0) return false
+
+    let inkPixels = 0
+    const totalPixels = bw * bh
+    // Sample pixels (every 2nd pixel for speed) to check for non-white content
+    for (let y = by1; y < by2; y += 2) {
+      for (let x = bx1; x < bx2; x += 2) {
+        const idx = (y * imgWidth + x) * 4
+        const r = pixels[idx], g = pixels[idx + 1], b = pixels[idx + 2]
+        // Pixel is "ink" if it's not near-white (below 240 in any channel)
+        if (r < 240 || g < 240 || b < 240) inkPixels++
+      }
+    }
+    // Adjust for sampling (every 2nd pixel)
+    const sampledTotal = Math.ceil(bh / 2) * Math.ceil(bw / 2)
+    const inkRatio = sampledTotal > 0 ? inkPixels / sampledTotal : 0
+    return inkRatio >= MIN_INK_RATIO
+  })
 }
 
 /**
