@@ -5,20 +5,19 @@
 // onnxruntime-web is loaded dynamically only when ONNX mode is requested
 let ort = null
 
-// Class labels matching the training config (SceneDAPR order)
+// Class labels matching the training config (yolo-exp-All.yaml / SceneDAPR order)
 export const CLASS_NAMES = ['rain', 'umbrella', 'person', 'lightning', 'cloud', 'puddle']
-// Per-class confidence thresholds (raised to reduce false positives)
+// Per-class confidence thresholds (aligned with copilot backend post-processing)
 const CLASS_CONFIDENCE = {
-  rain: 0.6,
+  rain: 0.35,
   umbrella: 0.5,
   person: 0.5,
-  lightning: 0.5,
-  cloud: 0.5,
-  puddle: 0.5,
+  lightning: 0.3,
+  cloud: 0.3,
+  puddle: 0.3,
 }
-const MIN_DETECTION_AREA = 400 // Minimum bbox area in px² to filter tiny false positives
-const MIN_INK_RATIO = 0.05 // Minimum ratio of non-white pixels in bbox to keep detection
-const MAX_DETECTIONS_PER_CLASS = 5 // Maximum detections per class to reduce clutter
+const MIN_DETECTION_AREA = 100 // Minimum bbox area in px² (aligned with backend)
+const MIN_INK_RATIO = 0.02 // Minimum ratio of non-white pixels in bbox to keep detection
 
 const MODEL_INPUT_SIZE = 640
 const MODEL_PATH = import.meta.env.BASE_URL + 'models/dapr.onnx'
@@ -59,7 +58,7 @@ export async function detectObjects(imageSource, options = {}) {
     return placeholderDetect(width, height)
   }
 
-  const ctx = canvas.getContext('2d')
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })
   const imageData = ctx.getImageData(0, 0, width, height)
   try {
     const detections = await onnxInference(imageData, width, height, { confidenceThreshold, iouThreshold })
@@ -181,15 +180,20 @@ async function getOnnxSession() {
   if (cachedSession) return cachedSession
   if (!ort) {
     ort = await import('onnxruntime-web')
+    ort.env.wasm.numThreads = 1
+    // In dev mode, Vite can't resolve ort's internal dynamic imports for WASM files,
+    // so point to the raw node_modules path which Vite serves directly.
+    if (import.meta.env.DEV) {
+      ort.env.wasm.wasmPaths = '/node_modules/onnxruntime-web/dist/'
+    }
   }
   try {
     cachedSession = await ort.InferenceSession.create(MODEL_PATH, {
-      executionProviders: ['webgl', 'wasm'],
-    })
-  } catch {
-    cachedSession = await ort.InferenceSession.create(MODEL_PATH, {
       executionProviders: ['wasm'],
     })
+  } catch (e) {
+    console.warn('ONNX session creation failed:', e.message)
+    throw e
   }
   return cachedSession
 }
@@ -313,13 +317,6 @@ function postprocessOutput(outputTensor, origWidth, origHeight, confidenceThresh
       const h = det.bbox[3] - det.bbox[1]
       return w * h >= MIN_DETECTION_AREA
     })
-
-  // Limit detections per class to reduce clutter
-  const classCounts = {}
-  results = results.filter((det) => {
-    classCounts[det.category] = (classCounts[det.category] || 0) + 1
-    return classCounts[det.category] <= MAX_DETECTIONS_PER_CLASS
-  })
 
   console.debug(`[DAPR] Final detections:`, results.map(d => `${d.category}(${d.confidence}) [${d.bbox.join(',')}]`))
   return results

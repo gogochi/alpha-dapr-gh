@@ -222,20 +222,15 @@ export async function getDashboardData(sketchId) {
 export async function getScoreDistribution() {
   const allScores = await db.daprScores.toArray()
 
-  // Build histogram: 0-10, 10-20, ..., 90-100
-  const buckets = Array.from({ length: 10 }, (_, i) => ({
-    range: `${i * 10}-${(i + 1) * 10}`,
-    min: i * 10,
-    max: (i + 1) * 10,
-    count: 0,
-  }))
-
+  const scoreMap = new Map()
   for (const score of allScores) {
-    const idx = Math.min(Math.floor(score.totalScore / 10), 9)
-    buckets[idx].count++
+    const key = Number(score.totalScore ?? 0)
+    scoreMap.set(key, (scoreMap.get(key) || 0) + 1)
   }
 
-  return buckets
+  return Array.from(scoreMap.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([score, count]) => ({ score, count }))
 }
 
 // ---------------------------------------------------------------------------

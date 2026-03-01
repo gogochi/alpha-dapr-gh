@@ -334,8 +334,8 @@ async function refreshDashboard() {
 }
 
 function getCategoryTagType(category) {
-  const map = { person: 'primary', rain: 'info', umbrella: 'success', lightning: 'warning', puddle: 'info', cloud: '' }
-  return map[category] || ''
+  const map = { person: 'primary', rain: 'info', umbrella: 'success', lightning: 'warning', puddle: 'danger', cloud: 'info' }
+  return map[category] || 'info'
 }
 
 function formatDuration(seconds) {
@@ -401,7 +401,7 @@ function initScoreChart() {
     tooltip: { trigger: 'axis' },
     xAxis: {
       type: 'category',
-      data: dashData.value.scoreDistribution.map(d => d.range),
+      data: dashData.value.scoreDistribution.map(d => String(d.score)),
       name: 'DAPR Score',
     },
     yAxis: { type: 'value', name: 'Count' },
@@ -410,7 +410,7 @@ function initScoreChart() {
       data: dashData.value.scoreDistribution.map(d => ({
         value: d.count,
         itemStyle: {
-          color: (currentScore !== undefined && currentScore >= d.min && currentScore < d.max) ? '#F56C6C' : '#409EFF',
+          color: (currentScore !== undefined && currentScore === d.score) ? '#F56C6C' : '#409EFF',
         },
       })),
     }],
