@@ -21,7 +21,7 @@ const MIN_INK_RATIO = 0.05 // Minimum ratio of non-white pixels in bbox to keep 
 const MAX_DETECTIONS_PER_CLASS = 5 // Maximum detections per class to reduce clutter
 
 const MODEL_INPUT_SIZE = 640
-const MODEL_PATH = '/models/dapr.onnx'
+const MODEL_PATH = import.meta.env.BASE_URL + 'models/dapr.onnx'
 
 // Cached ONNX session to avoid reloading
 let cachedSession = null
