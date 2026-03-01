@@ -18,6 +18,7 @@ const CLASS_CONFIDENCE = {
 }
 const MIN_DETECTION_AREA = 400 // Minimum bbox area in px² to filter tiny false positives
 const MIN_INK_RATIO = 0.05 // Minimum ratio of non-white pixels in bbox to keep detection
+const MAX_DETECTIONS_PER_CLASS = 5 // Maximum detections per class to reduce clutter
 
 const MODEL_INPUT_SIZE = 640
 const MODEL_PATH = '/models/dapr.onnx'
@@ -155,6 +156,8 @@ async function onnxInference(imageData, origWidth, origHeight, options) {
   const { confidenceThreshold, iouThreshold } = options
   const session = await getOnnxSession()
 
+  console.debug(`[DAPR] Starting inference: ${origWidth}×${origHeight}, conf=${confidenceThreshold}, iou=${iouThreshold}`)
+
   // Preprocess: resize to 640x640, normalize to [0,1], CHW format, batch dim
   const { data: input, scale, padX, padY } = preprocessImage(imageData, origWidth, origHeight)
   const tensor = new ort.Tensor('float32', input, [1, 3, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE])
@@ -244,6 +247,8 @@ function postprocessOutput(outputTensor, origWidth, origHeight, confidenceThresh
   const [, numFeatures, numPredictions] = outputTensor.dims
   const numClasses = numFeatures - 4
 
+  console.debug(`[DAPR] Model output: (${outputTensor.dims.join(',')}), classes=${numClasses}, scale=${scale}, pad=(${padX},${padY})`)
+
   const boxes = []
   const scores = []
   const classIds = []
@@ -270,21 +275,33 @@ function postprocessOutput(outputTensor, origWidth, origHeight, confidenceThresh
     const classThreshold = (className && CLASS_CONFIDENCE[className]) || confidenceThreshold
     if (maxScore < classThreshold) continue
 
-    // Convert from center format to corner format and scale to original image
-    const x1 = (cx - w / 2 - padX) / scale
-    const y1 = (cy - h / 2 - padY) / scale
-    const x2 = (cx + w / 2 - padX) / scale
-    const y2 = (cy + h / 2 - padY) / scale
+    // Convert from center format to corner format and reverse letterbox
+    let x1 = (cx - w / 2 - padX) / scale
+    let y1 = (cy - h / 2 - padY) / scale
+    let x2 = (cx + w / 2 - padX) / scale
+    let y2 = (cy + h / 2 - padY) / scale
+
+    // Clip to image boundaries
+    x1 = Math.max(0, Math.min(origWidth, x1))
+    y1 = Math.max(0, Math.min(origHeight, y1))
+    x2 = Math.max(0, Math.min(origWidth, x2))
+    y2 = Math.max(0, Math.min(origHeight, y2))
+
+    // Skip degenerate boxes
+    if (x2 - x1 < 5 || y2 - y1 < 5) continue
 
     boxes.push([x1, y1, x2, y2])
     scores.push(maxScore)
     classIds.push(maxClassId)
   }
 
+  console.debug(`[DAPR] Candidates after threshold: ${boxes.length}`)
+
   // Apply per-class NMS (matching copilot backend behavior)
   const keepIndices = nms(boxes, scores, iouThreshold, classIds)
 
-  return keepIndices
+  // Build results with area filter
+  let results = keepIndices
     .map((idx) => ({
       category: classIds[idx] < CLASS_NAMES.length ? CLASS_NAMES[classIds[idx]] : `class_${classIds[idx]}`,
       bbox: boxes[idx].map((v) => Math.round(v * 100) / 100),
@@ -296,6 +313,16 @@ function postprocessOutput(outputTensor, origWidth, origHeight, confidenceThresh
       const h = det.bbox[3] - det.bbox[1]
       return w * h >= MIN_DETECTION_AREA
     })
+
+  // Limit detections per class to reduce clutter
+  const classCounts = {}
+  results = results.filter((det) => {
+    classCounts[det.category] = (classCounts[det.category] || 0) + 1
+    return classCounts[det.category] <= MAX_DETECTIONS_PER_CLASS
+  })
+
+  console.debug(`[DAPR] Final detections:`, results.map(d => `${d.category}(${d.confidence}) [${d.bbox.join(',')}]`))
+  return results
 }
 
 /**

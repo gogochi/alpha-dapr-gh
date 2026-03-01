@@ -480,7 +480,7 @@ onMounted(async () => {
 .dashboard-view { padding: 24px; max-width: 1400px; margin: 0 auto; }
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
 .sketch-preview { text-align: center; margin-bottom: 12px; }
-.detection-canvas { max-width: 100%; max-height: 400px; border: 1px solid #ebeef5; }
+.detection-canvas { max-width: 100%; max-height: 400px; border: 1px solid #ebeef5; display: block; margin: 0 auto; }
 .confidence-slider { margin-bottom: 12px; font-size: 13px; color: #606266; }
 .detection-summary { margin-bottom: 12px; padding: 8px 12px; background: #f5f7fa; border-radius: 6px; font-size: 13px; color: #606266; }
 .detection-summary p { margin: 0 0 6px 0; }
