@@ -7,17 +7,17 @@ let ort = null
 
 // Class labels matching the training config (SceneDAPR order)
 export const CLASS_NAMES = ['rain', 'umbrella', 'person', 'lightning', 'cloud', 'puddle']
-// Per-class confidence thresholds (at least 0.5 matching copilot backend base)
+// Per-class confidence thresholds (raised to reduce false positives)
 const CLASS_CONFIDENCE = {
-  rain: 0.5,
+  rain: 0.6,
   umbrella: 0.5,
   person: 0.5,
-  lightning: 0.45,
-  cloud: 0.45,
-  puddle: 0.45,
+  lightning: 0.5,
+  cloud: 0.5,
+  puddle: 0.5,
 }
-const MIN_DETECTION_AREA = 100 // Minimum bbox area in px² to filter tiny false positives
-const MIN_INK_RATIO = 0.02 // Minimum ratio of non-white pixels in bbox to keep detection
+const MIN_DETECTION_AREA = 400 // Minimum bbox area in px² to filter tiny false positives
+const MIN_INK_RATIO = 0.05 // Minimum ratio of non-white pixels in bbox to keep detection
 
 const MODEL_INPUT_SIZE = 640
 const MODEL_PATH = '/models/dapr.onnx'
@@ -281,8 +281,8 @@ function postprocessOutput(outputTensor, origWidth, origHeight, confidenceThresh
     classIds.push(maxClassId)
   }
 
-  // Apply NMS
-  const keepIndices = nms(boxes, scores, iouThreshold)
+  // Apply per-class NMS (matching copilot backend behavior)
+  const keepIndices = nms(boxes, scores, iouThreshold, classIds)
 
   return keepIndices
     .map((idx) => ({
@@ -299,13 +299,15 @@ function postprocessOutput(outputTensor, origWidth, origHeight, confidenceThresh
 }
 
 /**
- * Non-Maximum Suppression
+ * Per-class Non-Maximum Suppression (matching copilot backend behavior)
+ * Only suppresses overlapping boxes of the SAME class
  * @param {Array<number[]>} boxes - [[x1,y1,x2,y2], ...]
  * @param {number[]} scores - confidence scores
+ * @param {number[]} classIds - class IDs for each box
  * @param {number} iouThreshold - IoU threshold for suppression
  * @returns {number[]} indices of kept boxes
  */
-function nms(boxes, scores, iouThreshold) {
+function nms(boxes, scores, iouThreshold, classIds = null) {
   const order = scores.map((_, i) => i)
   order.sort((a, b) => scores[b] - scores[a])
 
@@ -320,6 +322,8 @@ function nms(boxes, scores, iouThreshold) {
     for (let sj = si + 1; sj < order.length; sj++) {
       const j = order[sj]
       if (suppressed.has(j)) continue
+      // Per-class: only suppress if same class
+      if (classIds && classIds[i] !== classIds[j]) continue
       if (calculateIoU(boxes[i], boxes[j]) > iouThreshold) {
         suppressed.add(j)
       }
