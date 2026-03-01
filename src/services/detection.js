@@ -14,6 +14,17 @@ const MODEL_PATH = '/models/dapr.onnx'
 // Cached ONNX session to avoid reloading
 let cachedSession = null
 
+// Reusable canvas for source conversion to avoid repeated allocations
+let reusableCanvas = null
+function getReusableCanvas(width, height) {
+  if (!reusableCanvas) {
+    reusableCanvas = document.createElement('canvas')
+  }
+  reusableCanvas.width = width
+  reusableCanvas.height = height
+  return reusableCanvas
+}
+
 /**
  * Detect objects in an image
  * @param {HTMLImageElement|HTMLCanvasElement|string} imageSource - Image element, canvas, or data URL
@@ -52,12 +63,12 @@ async function getCanvasFromSource(source) {
   }
 
   const img = await resolveImage(source)
-  const canvas = document.createElement('canvas')
-  canvas.width = img.naturalWidth || img.width
-  canvas.height = img.naturalHeight || img.height
+  const w = img.naturalWidth || img.width
+  const h = img.naturalHeight || img.height
+  const canvas = getReusableCanvas(w, h)
   const ctx = canvas.getContext('2d')
   ctx.drawImage(img, 0, 0)
-  return { canvas, width: canvas.width, height: canvas.height }
+  return { canvas, width: w, height: h }
 }
 
 /**
@@ -94,7 +105,7 @@ async function onnxInference(imageData, origWidth, origHeight, options) {
   const session = await getOnnxSession()
 
   // Preprocess: resize to 640x640, normalize to [0,1], CHW format, batch dim
-  const input = preprocessImage(imageData, origWidth, origHeight)
+  const { data: input, scale, padX, padY } = preprocessImage(imageData, origWidth, origHeight)
   const tensor = new ort.Tensor('float32', input, [1, 3, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE])
 
   const feeds = {}
@@ -106,7 +117,7 @@ async function onnxInference(imageData, origWidth, origHeight, options) {
   const output = results[outputName]
 
   // YOLOv8 output: (1, numClasses + 4, 8400) → parse boxes + class scores
-  return postprocessOutput(output, origWidth, origHeight, confidenceThreshold, iouThreshold)
+  return postprocessOutput(output, origWidth, origHeight, confidenceThreshold, iouThreshold, scale, padX, padY)
 }
 
 /**
@@ -117,47 +128,59 @@ async function getOnnxSession() {
   if (!ort) {
     ort = await import('onnxruntime-web')
   }
-  cachedSession = await ort.InferenceSession.create(MODEL_PATH, {
-    executionProviders: ['wasm'],
-  })
+  try {
+    cachedSession = await ort.InferenceSession.create(MODEL_PATH, {
+      executionProviders: ['webgl', 'wasm'],
+    })
+  } catch {
+    cachedSession = await ort.InferenceSession.create(MODEL_PATH, {
+      executionProviders: ['wasm'],
+    })
+  }
   return cachedSession
 }
 
 /**
- * Preprocess image data for YOLOv8: resize to 640x640, normalize, CHW format
- * @returns {Float32Array} - [1, 3, 640, 640] tensor data
+ * Preprocess image data for YOLOv8: letterbox resize to 640x640, normalize, CHW format
+ * @returns {{ data: Float32Array, scale: number, padX: number, padY: number }}
  */
 function preprocessImage(imageData, origWidth, origHeight) {
-  // Use an offscreen canvas to resize
+  // Letterbox: scale to fit 640×640 preserving aspect ratio, pad with gray (114/255)
+  const scale = Math.min(MODEL_INPUT_SIZE / origWidth, MODEL_INPUT_SIZE / origHeight)
+  const newW = Math.round(origWidth * scale)
+  const newH = Math.round(origHeight * scale)
+  const padX = Math.round((MODEL_INPUT_SIZE - newW) / 2)
+  const padY = Math.round((MODEL_INPUT_SIZE - newH) / 2)
+
   const resizeCanvas = document.createElement('canvas')
   resizeCanvas.width = MODEL_INPUT_SIZE
   resizeCanvas.height = MODEL_INPUT_SIZE
   const ctx = resizeCanvas.getContext('2d')
 
-  // Draw source image data onto a temporary canvas first
+  // Fill with gray (standard YOLO letterbox padding color: 114)
+  ctx.fillStyle = 'rgb(114, 114, 114)'
+  ctx.fillRect(0, 0, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE)
+
+  // Draw source image scaled and centered
   const srcCanvas = document.createElement('canvas')
   srcCanvas.width = origWidth
   srcCanvas.height = origHeight
-  const srcCtx = srcCanvas.getContext('2d')
-  srcCtx.putImageData(imageData, 0, 0)
+  srcCanvas.getContext('2d').putImageData(imageData, 0, 0)
+  ctx.drawImage(srcCanvas, padX, padY, newW, newH)
 
-  // Resize with letterboxing (stretch to fill for simplicity, matching common YOLO preprocessing)
-  ctx.drawImage(srcCanvas, 0, 0, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE)
   const resized = ctx.getImageData(0, 0, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE)
   const pixels = resized.data
-
-  // Convert RGBA → CHW float32 normalized to [0, 1]
   const size = MODEL_INPUT_SIZE * MODEL_INPUT_SIZE
   const float32Data = new Float32Array(3 * size)
 
   for (let i = 0; i < size; i++) {
     const ri = i * 4
-    float32Data[i] = pixels[ri] / 255.0             // R → channel 0
-    float32Data[size + i] = pixels[ri + 1] / 255.0  // G → channel 1
-    float32Data[2 * size + i] = pixels[ri + 2] / 255.0 // B → channel 2
+    float32Data[i] = pixels[ri] / 255.0
+    float32Data[size + i] = pixels[ri + 1] / 255.0
+    float32Data[2 * size + i] = pixels[ri + 2] / 255.0
   }
 
-  return float32Data
+  return { data: float32Data, scale, padX, padY }
 }
 
 /**
@@ -165,12 +188,10 @@ function preprocessImage(imageData, origWidth, origHeight) {
  * YOLOv8 output shape: (1, 4 + numClasses, 8400)
  * Each of 8400 predictions: [cx, cy, w, h, class0_score, class1_score, ...]
  */
-function postprocessOutput(outputTensor, origWidth, origHeight, confidenceThreshold, iouThreshold) {
+function postprocessOutput(outputTensor, origWidth, origHeight, confidenceThreshold, iouThreshold, scale, padX, padY) {
   const data = outputTensor.data
   const [, numFeatures, numPredictions] = outputTensor.dims
   const numClasses = numFeatures - 4
-  const scaleX = origWidth / MODEL_INPUT_SIZE
-  const scaleY = origHeight / MODEL_INPUT_SIZE
 
   const boxes = []
   const scores = []
@@ -197,10 +218,10 @@ function postprocessOutput(outputTensor, origWidth, origHeight, confidenceThresh
     if (maxScore < confidenceThreshold) continue
 
     // Convert from center format to corner format and scale to original image
-    const x1 = (cx - w / 2) * scaleX
-    const y1 = (cy - h / 2) * scaleY
-    const x2 = (cx + w / 2) * scaleX
-    const y2 = (cy + h / 2) * scaleY
+    const x1 = (cx - w / 2 - padX) / scale
+    const y1 = (cy - h / 2 - padY) / scale
+    const x2 = (cx + w / 2 - padX) / scale
+    const y2 = (cy + h / 2 - padY) / scale
 
     boxes.push([x1, y1, x2, y2])
     scores.push(maxScore)
@@ -226,19 +247,20 @@ function postprocessOutput(outputTensor, origWidth, origHeight, confidenceThresh
  * @returns {number[]} indices of kept boxes
  */
 function nms(boxes, scores, iouThreshold) {
-  // Sort by score descending
-  const indices = scores.map((_, i) => i)
-  indices.sort((a, b) => scores[b] - scores[a])
+  const order = scores.map((_, i) => i)
+  order.sort((a, b) => scores[b] - scores[a])
 
   const keep = []
   const suppressed = new Set()
 
-  for (const i of indices) {
+  for (let si = 0; si < order.length; si++) {
+    const i = order[si]
     if (suppressed.has(i)) continue
     keep.push(i)
 
-    for (const j of indices) {
-      if (j <= i || suppressed.has(j)) continue
+    for (let sj = si + 1; sj < order.length; sj++) {
+      const j = order[sj]
+      if (suppressed.has(j)) continue
       if (calculateIoU(boxes[i], boxes[j]) > iouThreshold) {
         suppressed.add(j)
       }
@@ -371,4 +393,22 @@ function placeholderDetect(width, height) {
     bbox: d.bbox.map((v) => Math.round(v * 100) / 100),
     confidence: Math.round(d.confidence * 1000) / 1000,
   }))
+}
+
+/**
+ * Pre-load and warm up the ONNX model for faster first inference
+ * Call this during app initialization to avoid cold-start latency
+ */
+export async function warmupModel() {
+  try {
+    const session = await getOnnxSession()
+    // Run a dummy inference to warm up the model
+    const dummyInput = new Float32Array(3 * MODEL_INPUT_SIZE * MODEL_INPUT_SIZE)
+    const tensor = new ort.Tensor('float32', dummyInput, [1, 3, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE])
+    const feeds = {}
+    feeds[session.inputNames[0]] = tensor
+    await session.run(feeds)
+  } catch {
+    // Warm-up failure is non-critical
+  }
 }

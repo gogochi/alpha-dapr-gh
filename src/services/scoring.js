@@ -70,7 +70,7 @@ const RESOURCE_ITEMS = [
  * @returns {[number, number]}
  */
 function getCenter(det) {
-  return [(det.bbox_x + det.bbox_w) / 2, (det.bbox_y + det.bbox_h) / 2];
+  return [det.bbox_x + det.bbox_w / 2, det.bbox_y + det.bbox_h / 2];
 }
 
 /**
