@@ -108,6 +108,19 @@ git push -f git@github.com:<你的帳號>/<repo名稱>.git gh-pages
 
 ## 更新紀錄
 
+### 2026-03-01 — 啟用真實 ONNX 模型推論
+
+#### 修正辨識準確度（關鍵修正）
+
+| 修正項目 | 說明 |
+|---------|------|
+| 🔴 **啟用真實 ONNX 模型** | 之前 `useOnnx` 預設為 `false`，所有偵測結果皆為隨機產生（placeholder）。現已改為預設 `true`，使用 SceneDAPR 訓練的 YOLOv8 模型進行真正的物件偵測 |
+| 🔴 **修正 CLASS_NAMES 順序** | 模型訓練順序為 `[rain, umbrella, person, ...]`，但程式碼原為 `[person, rain, umbrella, ...]`，導致類別對應全部錯誤。已修正匹配訓練資料 |
+| 🔴 **部署 ONNX 模型檔案** | 將 SceneDAPR `yolov8-all.pt` 轉換為 ONNX 格式並放置於 `public/models/dapr.onnx`（11.7 MB） |
+| ✅ **Per-class 信心閾值** | 新增各類別專屬閾值（person/umbrella: 0.5, rain: 0.35, lightning/cloud/puddle: 0.3），匹配 copilot 後端設定 |
+| ✅ **最小面積過濾** | 過濾面積 < 100px² 的微小誤偵測 |
+| ✅ **ONNX 失敗自動降級** | 若模型載入失敗，自動 fallback 至 placeholder 模式，確保功能可用 |
+
 ### 2026-03-01 — 提升辨識效率與移除登入
 
 #### 移除登入頁面

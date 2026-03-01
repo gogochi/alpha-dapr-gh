@@ -6,7 +6,17 @@
 let ort = null
 
 // Class labels matching the training config (SceneDAPR order)
-export const CLASS_NAMES = ['person', 'rain', 'umbrella', 'lightning', 'cloud', 'puddle']
+export const CLASS_NAMES = ['rain', 'umbrella', 'person', 'lightning', 'cloud', 'puddle']
+// Per-class confidence thresholds matching the copilot backend
+const CLASS_CONFIDENCE = {
+  rain: 0.35,
+  umbrella: 0.5,
+  person: 0.5,
+  lightning: 0.3,
+  cloud: 0.3,
+  puddle: 0.3,
+}
+const MIN_DETECTION_AREA = 100 // Minimum bbox area in px² to filter tiny false positives
 
 const MODEL_INPUT_SIZE = 640
 const MODEL_PATH = '/models/dapr.onnx'
@@ -38,7 +48,7 @@ export async function detectObjects(imageSource, options = {}) {
   const {
     confidenceThreshold = 0.25,
     iouThreshold = 0.45,
-    useOnnx = false,
+    useOnnx = true,
   } = options
 
   const { canvas, width, height } = await getCanvasFromSource(imageSource)
@@ -49,7 +59,12 @@ export async function detectObjects(imageSource, options = {}) {
 
   const ctx = canvas.getContext('2d')
   const imageData = ctx.getImageData(0, 0, width, height)
-  return onnxInference(imageData, width, height, { confidenceThreshold, iouThreshold })
+  try {
+    return await onnxInference(imageData, width, height, { confidenceThreshold, iouThreshold })
+  } catch (e) {
+    console.warn('ONNX inference failed, falling back to placeholder:', e.message)
+    return placeholderDetect(width, height)
+  }
 }
 
 /**
@@ -215,7 +230,9 @@ function postprocessOutput(outputTensor, origWidth, origHeight, confidenceThresh
       }
     }
 
-    if (maxScore < confidenceThreshold) continue
+    const className = maxClassId < CLASS_NAMES.length ? CLASS_NAMES[maxClassId] : null
+    const classThreshold = (className && CLASS_CONFIDENCE[className]) || confidenceThreshold
+    if (maxScore < classThreshold) continue
 
     // Convert from center format to corner format and scale to original image
     const x1 = (cx - w / 2 - padX) / scale
@@ -231,12 +248,18 @@ function postprocessOutput(outputTensor, origWidth, origHeight, confidenceThresh
   // Apply NMS
   const keepIndices = nms(boxes, scores, iouThreshold)
 
-  return keepIndices.map((idx) => ({
-    category: classIds[idx] < CLASS_NAMES.length ? CLASS_NAMES[classIds[idx]] : `class_${classIds[idx]}`,
-    bbox: boxes[idx].map((v) => Math.round(v * 100) / 100),
-    confidence: Math.round(scores[idx] * 1000) / 1000,
-    class_id: classIds[idx],
-  }))
+  return keepIndices
+    .map((idx) => ({
+      category: classIds[idx] < CLASS_NAMES.length ? CLASS_NAMES[classIds[idx]] : `class_${classIds[idx]}`,
+      bbox: boxes[idx].map((v) => Math.round(v * 100) / 100),
+      confidence: Math.round(scores[idx] * 1000) / 1000,
+      class_id: classIds[idx],
+    }))
+    .filter((det) => {
+      const w = det.bbox[2] - det.bbox[0]
+      const h = det.bbox[3] - det.bbox[1]
+      return w * h >= MIN_DETECTION_AREA
+    })
 }
 
 /**
@@ -313,7 +336,7 @@ function placeholderDetect(width, height) {
     category: 'person',
     bbox: [personX, personY, personX + personW, personY + personH],
     confidence: randConf(),
-    class_id: 0,
+    class_id: 2,
   })
 
   // Random rain drops (3-8 small boxes in upper area)
@@ -327,7 +350,7 @@ function placeholderDetect(width, height) {
       category: 'rain',
       bbox: [rx, ry, rx + rw, ry + rh],
       confidence: randConf(),
-      class_id: 1,
+      class_id: 0,
     })
   }
 
@@ -341,7 +364,7 @@ function placeholderDetect(width, height) {
       category: 'umbrella',
       bbox: [umbX, umbY, umbX + umbW, umbY + umbH],
       confidence: randConf(),
-      class_id: 2,
+      class_id: 1,
     })
   }
 
